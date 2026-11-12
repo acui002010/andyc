@@ -1,5 +1,5 @@
-name: Olive Monitor - API Diagnostic V4
-on:
+name: Olive Monitor - Online Source Test V5
+'on':
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,82 +11,80 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install Playwright
-        run: python -m pip install -q playwright
-      - name: Diagnose official online option API
+      - run: python -m pip install -q playwright
+      - name: Inspect orderability and delivery separately
         shell: bash
         run: |
           xvfb-run -a python - <<'PY'
           from playwright.sync_api import sync_playwright
-          products = [
+
+          items = [
               ('A000000255435', {'007':'[단품]107', '009':'[단품]109'}),
               ('A000001004502', {'001':'J02', '002':'J05'}),
           ]
-          script = """async goods => {
+          js = """async g => {
             const ctl = new AbortController();
             const timer = setTimeout(() => ctl.abort(), 10000);
             try {
-              const response = await fetch('/goods/api/v1/detail?goodsNo=' + goods,
-                                           {signal: ctl.signal, headers:{Accept:'application/json'}});
-              const type = response.headers.get('content-type') || '';
-              const cf = response.headers.get('cf-mitigated') || 'none';
-              if (!response.ok || !type.toLowerCase().includes('json'))
-                return {http: response.status, type, cf, data: null};
-              const body = await response.text();
-              if (body.length > 500000)
-                return {http: response.status, type, cf, error: 'oversize'};
-              try {return {http: response.status, type, cf, data: JSON.parse(body)};}
-              catch(e) {return {http: response.status, type, cf, error: 'invalid_json'};}
-            } catch(e) {return {error: e.name};}
+              const r = await fetch('/goods/api/v1/detail?goodsNo=' + g,
+                {signal:ctl.signal, headers:{Accept:'application/json'}});
+              const type = r.headers.get('content-type') || '';
+              const cf = r.headers.get('cf-mitigated') || 'none';
+              if (!r.ok || !type.toLowerCase().includes('json'))
+                return {http:r.status, cf, type};
+              const data = await r.json();
+              return {http:r.status, cf, type, data};
+            } catch(e) {return {error:e.name};}
             finally {clearTimeout(timer);}
           }"""
-          valid_count = 0
-          with sync_playwright() as pw:
-              browser = pw.chromium.launch(channel='chrome', headless=False)
+          valid = 0
+          with sync_playwright() as p:
+              browser = p.chromium.launch(channel='chrome', headless=False)
               try:
-                  for goods, wanted in products:
-                      context = browser.new_context(locale='ko-KR', service_workers='block')
+                  for goods, wanted in items:
+                      ctx = browser.new_context(locale='ko-KR', service_workers='block')
                       try:
-                          page = context.new_page()
-                          url = 'https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo=' + goods
-                          response = page.goto(url, wait_until='domcontentloaded', timeout=25000)
-                          print('\nGOODS:', goods, 'PAGE_HTTP:', response.status if response else 'none', flush=True)
-                          if not response or response.status != 200 or response.headers.get('cf-mitigated') == 'challenge':
-                              print('PAGE_BLOCKED_OR_FAILED', flush=True)
+                          page = ctx.new_page()
+                          link = 'https://www.oliveyoung.co.kr/store/goods/getGoodsDetail.do?goodsNo=' + goods
+                          r = page.goto(link, wait_until='domcontentloaded', timeout=25000)
+                          print('GOODS', goods, 'PAGE_HTTP', r.status if r else 'NONE', flush=True)
+                          if not r or r.status != 200 or r.headers.get('cf-mitigated') == 'challenge':
+                              print('DATA: UNKNOWN (page blocked)', flush=True)
                               continue
                           page.wait_for_timeout(3000)
-                          outcome = page.evaluate(script, goods)
-                          print('API_HTTP:', outcome.get('http', 'none'),
-                                'CF:', outcome.get('cf', 'none'),
-                                'TYPE:', outcome.get('type', 'none'),
-                                'ERROR:', outcome.get('error', 'none'), flush=True)
-                          data = outcome.get('data')
-                          details = data.get('data') if isinstance(data, dict) and data.get('status') == 'SUCCESS' else None
-                          if not isinstance(details, dict) or details.get('goodsNumber') != goods or not isinstance(details.get('options'), list):
-                              print('VALID_JSON: NO', flush=True)
+                          result = page.evaluate(js, goods)
+                          print('API_HTTP', result.get('http','NONE'), 'CF',result.get('cf','none'),
+                                'TYPE',result.get('type','none'),'ERROR',result.get('error','none'),flush=True)
+                          body = result.get('data')
+                          d = body.get('data') if isinstance(body,dict) and body.get('status') == 'SUCCESS' and body.get('isSuccess') is True else None
+                          if not isinstance(d,dict) or d.get('goodsNumber') != goods or not isinstance(d.get('options'),list) or not d['options']:
+                              print('DATA: UNKNOWN (not valid product JSON)', flush=True)
                               continue
-                          print('VALID_JSON: YES', flush=True)
-                          valid_count += 1
-                          for opt_num, label in wanted.items():
-                              matches = [o for o in details['options'] if isinstance(o, dict) and str(o.get('optionNumber')) == opt_num and label in str(o.get('optionName', ''))]
-                              if len(matches) != 1:
-                                  state = 'UNKNOWN'
-                              elif matches[0].get('soldOutFlag') is True:
-                                  state = 'OUT'
-                              elif matches[0].get('soldOutFlag') is False and details.get('saleableFlag') is True:
-                                  state = {True:'PREORDER', False:'STOCK'}.get(matches[0].get('reservationFlag'), 'UNKNOWN')
-                              else:
-                                  state = 'UNKNOWN'
-                              print('OPTION:', opt_num, 'STATE:', state, flush=True)
-                      except Exception as error:
-                          print('DIAGNOSTIC_EXCEPTION:', type(error).__name__, flush=True)
+                          valid += 1
+                          for number, label in wanted.items():
+                              matched = [o for o in d['options'] if isinstance(o,dict)
+                                  and o.get('optionNumber') == number
+                                  and label in str(o.get('optionName',''))]
+                              state = 'UNKNOWN'
+                              delivery = 'UNKNOWN'
+                              if len(matched) == 1:
+                                  o = matched[0]
+                                  if o.get('soldOutFlag') is True:
+                                      state = 'OUT'
+                                  elif o.get('soldOutFlag') is False and d.get('saleableFlag') is True:
+                                      state = 'ORDERABLE'
+                                      if o.get('reservationFlag') is True:
+                                          delivery = 'RESERVATION_MARKED'
+                                      elif o.get('reservationFlag') is False:
+                                          delivery = 'NO_RESERVATION_FLAG'
+                              print('OPTION',number,'ORDERABILITY',state,'DELIVERY',delivery,flush=True)
+                      except Exception as exc:
+                          print('ERROR',type(exc).__name__,'(status UNKNOWN)',flush=True)
                       finally:
-                          context.close()
+                          ctx.close()
               finally:
                   browser.close()
-          print('\nVALID_PRODUCTS:', str(valid_count) + '/2', flush=True)
-          print('DIAGNOSTIC_DONE (no notifications sent)', flush=True)
+          print('VALID_PRODUCTS:',str(valid)+'/2',flush=True)
+          print('DIAGNOSTIC_FINISHED; NO ALERTS SENT',flush=True)
           PY
-                    # END - OLIVE MONITOR V4
-          PY
-          # END - OLIVE MONITOR V4
+          # END - OLIVE MONITOR V5
