@@ -1,6 +1,9 @@
 name: Olive Monitor - Online Source Test V5
 'on':
   workflow_dispatch:
+  schedule:
+    # Trial: one check every 15 minutes, avoiding :00. UTC scheduling.
+    - cron: '7,22,37,52 * * * *'
 permissions:
   contents: read
 jobs:
