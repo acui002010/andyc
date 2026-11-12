@@ -9,7 +9,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -22,75 +22,75 @@ jobs:
         run: |
           xvfb-run -a python - <<'PY'
           import os
-          import re
           import sys
           from datetime import datetime, timezone
-          from pathlib import Path
-          from urllib.parse import parse_qs, urlparse
           from playwright.sync_api import sync_playwright
 
           BASE = "https://www.oliveyoung.co.kr"
           PRODUCTS = [
-              ("A000000255435", {"007": "[단품]107 36.5", "009": "[단품]109 피오니"}),
-              ("A000001004502", {"001": "J02 드림", "002": "J05 블랭키"}),
+              ("A000000255435", {"007": ("107", "[단품]"), "009": ("109", "[단품]")}),
+              ("A000001004502", {"001": ("J02", ""), "002": ("J05", "")}),
           ]
 
-          def check_detail(data, goods, expected):
+
+          def review(data, goods, targets):
               if not isinstance(data, dict) or data.get("status") != "SUCCESS":
+                  print("商品 JSON 无效：状态待确认", flush=True)
                   return False
               item = data.get("data")
               if not isinstance(item, dict) or item.get("goodsNumber") != goods:
+                  print("商品编号或数据结构不符：状态待确认", flush=True)
                   return False
-              options = item.get("options")
-              if not isinstance(options, list):
+              opts = item.get("options")
+              if not isinstance(opts, list):
+                  print("选项数据缺失：状态待确认", flush=True)
                   return False
-              print("有效商品 JSON：YES | 选项数量：", len(options), flush=True)
-              for number, label in expected.items():
-                  matches = [o for o in options if isinstance(o, dict)
-                             and str(o.get("optionNumber")) == number]
-                  if len(matches) != 1:
-                      print(f"  {label}: 找到 {len(matches)} 项 → 待确认")
+              print(f"有效商品 JSON：YES | 选项数量：{len(opts)}", flush=True)
+              complete = True
+              for num, (shade, tag) in targets.items():
+                  hits = [o for o in opts if isinstance(o, dict) and str(o.get("optionNumber")) == num]
+                  if len(hits) != 1:
+                      print(f"  选项 {num} ({shade}): 不存在或重复，待确认")
+                      complete = False
                       continue
-                  o = matches[0]
+                  o = hits[0]
                   name = str(o.get("optionName", ""))
-                  # 核实选项编号和具体商品名称；绝不能把套装当作单品。
-                  if ("[단품]" in label and "[단품]" not in name) or (
-                      re.search(r"(?<![A-Za-z0-9])" + re.escape(label.split()[0].replace("[단품]", ""))
-                                + r"(?![A-Za-z0-9])", name) is None):
-                      print(f"  {label}: 名称不符 → 待确认")
+                  if shade not in name or (tag and tag not in name):
+                      print(f"  选项 {num}: 名称不一致，待确认")
+                      complete = False
                       continue
                   sold = o.get("soldOutFlag")
                   reserve = o.get("reservationFlag")
                   if sold is True:
-                      state = "售罄"
+                      state = "售罄标记"
                   elif sold is False and item.get("saleableFlag") is True and reserve is True:
                       state = "预售可下单信号"
                   elif sold is False and item.get("saleableFlag") is True and reserve is False:
                       state = "普通可下单信号"
                   else:
                       state = "待确认"
-                  print(f"  {label} | 选项 {number} | {state} | quantity={o.get('quantity')}")
-              return True
+                      complete = False
+                  print(f"  {num} {name}: {state} | quantity={o.get('quantity')}", flush=True)
+              return complete
 
-          def is_detail(res, goods):
-              p = urlparse(res.url)
-              return p.hostname == "www.oliveyoung.co.kr" and p.path == "/goods/api/v1/detail" \
-                  and parse_qs(p.query).get("goodsNo") == [goods]
 
-          def run(browser, goods, expected):
-              print(f"\n===== 商品 {goods} =====", flush=True)
+          def run(browser, goods, targets):
+              print(f"\n====== 商品 {goods} ======", flush=True)
               context = browser.new_context(locale="ko-KR", service_workers="block")
               page = context.new_page()
-              recorded = []
-              page.on("response", lambda r: recorded.append(r) if is_detail(r, goods) else None)
+              page.set_default_timeout(12000)
               try:
                   url = BASE + "/store/goods/getGoodsDetail.do?goodsNo=" + goods
-                  response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                  response = page.goto(url, wait_until="domcontentloaded", timeout=25000)
                   if response is None:
-                      print("网页：无响应，数据未知")
+                      print("网页无响应；本轮未知")
                       return False
-                  print("网页 HTTP：", response.status,
-                        "| Cloudflare：", response.headers.get("cf-mitigated", "无"), flush=True)
+                  print("网页 HTTP：", response.status, "| Cloudflare：", response.headers.get("cf-mitigated", "无"), flush=True)
                   if response.status != 200 or response.headers.get("cf-mitigated") == "challenge":
-                      print("网页受到验证或返回错误：未取得库存")
+                      print("未通过网站验证；本轮未知")
+                      return False
+                  page.wait_for_timeout(4000)
+                  title = page.title().lower()
+                  if "just a moment" in title or "attention required" in title:
+                      print("检测到安全验证页面；本轮未知")
                       return False
