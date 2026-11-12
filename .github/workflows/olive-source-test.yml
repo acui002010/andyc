@@ -30,12 +30,14 @@ jobs:
           from urllib.parse import urlparse, parse_qs
           from playwright.sync_api import sync_playwright
 
-PRODUCTS = [
-    ("A000000255435", ["101", "102", "107", "109"]),
-    ("A000001004502", ["J02", "J05"]),
-]
+          # 本次测试先检查唇蜜，再检查腮红
+          PRODUCTS = [
+              ("A000000255435", ["101", "102", "107", "109"]),
+              ("A000001004502", ["J02", "J05"]),
+          ]
 
           BASE = "https://www.oliveyoung.co.kr"
+
 
           def summarize(data, goods, shades):
               if not isinstance(data, dict):
@@ -122,6 +124,7 @@ PRODUCTS = [
 
               return True
 
+
           def is_detail_response(response, goods):
               parsed = urlparse(response.url)
 
@@ -131,6 +134,7 @@ PRODUCTS = [
                   and parse_qs(parsed.query).get("goodsNo")
                   == [goods]
               )
+
 
           def run_test(browser, goods, shades):
               print("\n================================")
@@ -312,9 +316,11 @@ PRODUCTS = [
               finally:
                   context.close()
 
+
           print("================================")
           print("Olive Monitor V1.3")
           print("Chrome 图形界面免费数据源测试")
+          print("测试顺序：唇蜜 → 腮红")
           print("不发送通知，不修改阿里云")
           print("================================")
 
