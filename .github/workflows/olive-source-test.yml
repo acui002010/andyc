@@ -1,0 +1,153 @@
+name: Olive Monitor - Browser Source Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Playwright
+        run: python -m pip install --disable-pip-version-check --quiet playwright
+      - name: Check Olive Young public product pages
+        shell: bash
+        run: |
+          python - <<'PY'
+          #!/usr/bin/env python3
+          """One-time public product-page test. No credentials or notifications."""
+          import json
+          import re
+          from urllib.parse import urlparse, parse_qs
+          from playwright.sync_api import sync_playwright
+          
+          PRODUCTS = [
+              ("A000001004502", ["J02", "J05"]),
+              ("A000000255435", ["101", "102"]),
+          ]
+          BASE = "https://www.oliveyoung.co.kr"
+          
+          
+          def summarize(data, goods, shades):
+              if not isinstance(data, dict) or data.get('status') != 'SUCCESS':
+                  print('结果：JSON 不是成功的商品响应；全部待确认')
+                  return
+              detail = data.get('data')
+              if not isinstance(detail, dict) or detail.get('goodsNumber') != goods or not isinstance(detail.get('options'), list):
+                  print('结果：商品编号或选项结构未验证；全部待确认')
+                  return
+              options = detail['options']
+              print('有效商品数据：YES | 选项数：', len(options), '| 商品可售：', detail.get('saleableFlag'))
+              for shade in shades:
+                  pattern = re.compile(r'(?<![A-Za-z0-9])' + re.escape(shade) + r'(?![A-Za-z0-9])', re.I)
+                  matches = [o for o in options if isinstance(o, dict) and pattern.search(str(o.get('optionName', '')))]
+                  if len(matches) != 1:
+                      print(f'色号 {shade}: 匹配 {len(matches)} 项；状态待确认')
+                      continue
+                  o = matches[0]
+                  sold = o.get('soldOutFlag')
+                  reserve = o.get('reservationFlag')
+                  if sold is True:
+                      state = '售罄标记'
+                  elif sold is False and detail.get('saleableFlag') is True and reserve is True:
+                      state = '预售可下单信号'
+                  elif sold is False and detail.get('saleableFlag') is True and reserve is False:
+                      state = '普通可下单信号'
+                  else:
+                      state = '待确认'
+                  print('色号', shade, '|', state, '| optionNumber:', str(o.get('optionNumber', '未知'))[:12],
+                        '| quantity:', o.get('quantity', '未提供'), '(不能单凭此数值判断是否缺货)')
+          
+          
+          def detail_response(response, goods):
+              parsed = urlparse(response.url)
+              return (parsed.hostname == 'www.oliveyoung.co.kr'
+                      and parsed.path == '/goods/api/v1/detail'
+                      and parse_qs(parsed.query).get('goodsNo') == [goods])
+          
+          
+          def run(browser, goods, shades):
+              print('\n========== 商品', goods, '==========', flush=True)
+              context = browser.new_context(locale='ko-KR', accept_downloads=False, service_workers='block')
+              page = context.new_page()
+              recorded = []
+              page.on('response', lambda res: recorded.append(res) if detail_response(res, goods) else None)
+              try:
+                  page_url = BASE + '/store/goods/getGoodsDetail.do?goodsNo=' + goods
+                  try:
+                      page_response = page.goto(page_url, wait_until='domcontentloaded', timeout=25000)
+                      if page_response is None:
+                          print('网页：没有 HTTP 响应；全部待确认')
+                          return
+                      print('网页 HTTP：', page_response.status,
+                            '| Cloudflare：', page_response.headers.get('cf-mitigated', '无'))
+                  except Exception as exc:
+                      print('网页请求失败：', type(exc).__name__, '；全部待确认')
+                      return
+                  if page_response.status != 200 or page_response.headers.get('cf-mitigated') == 'challenge':
+                      print('网页未正常放行；不尝试绕过验证；全部待确认')
+                      return
+                  page.wait_for_timeout(9000)
+                  title = page.title().lower()
+                  if 'just a moment' in title or 'attention required' in title:
+                      print('网页展示安全验证；不尝试绕过；全部待确认')
+                      return
+                  valid = False
+                  for res in recorded:
+                      ctype = res.headers.get('content-type', '').lower()
+                      print('网页调用详情 API：HTTP', res.status,
+                            '| Cloudflare：', res.headers.get('cf-mitigated', '无'))
+                      if res.status == 200 and 'json' in ctype:
+                          try:
+                              data = res.json()
+                              summarize(data, goods, shades)
+                              valid = True
+                              break
+                          except Exception:
+                              print('详情接口 JSON 无效')
+                  if valid:
+                      return
+                  # Same-origin API call from the page context, only when the product page loaded normally.
+                  # No login, cookies supplied by operator, CAPTCHA handling, stealth, or proxy.
+                  try:
+                      result = page.evaluate('''async goods => {
+                          const r = await fetch('/goods/api/v1/detail?goodsNo=' + encodeURIComponent(goods),
+                                                {headers: {'Accept': 'application/json'}});
+                          const type = r.headers.get('content-type') || '';
+                          if (!r.ok || !type.toLowerCase().includes('json'))
+                              return {status:r.status, type, data:null};
+                          const t = await r.text();
+                          if (t.length > 500000) return {status:r.status, type, data:null};
+                          try { return {status:r.status, type, data:JSON.parse(t)}; }
+                          catch (e) { return {status:r.status, type, data:null}; }
+                      }''', goods)
+                      print('网页内详情请求：HTTP', result.get('status'), '| 类型：', result.get('type'))
+                      if isinstance(result.get('data'), dict):
+                          summarize(result['data'], goods, shades)
+                      else:
+                          print('没有取得有效商品数据；全部待确认')
+                  except Exception as exc:
+                      print('网页内详情请求失败：', type(exc).__name__, '；全部待确认')
+              finally:
+                  context.close()
+          
+          
+          if __name__ == '__main__':
+              print('Olive Monitor · 免费云端浏览器单次验证 | 不发送通知、不更改服务器')
+              with sync_playwright() as playwright:
+                  browser = playwright.chromium.launch(channel='chrome', headless=True,
+                                                       args=['--disable-dev-shm-usage'])
+                  try:
+                      for goods, shades in PRODUCTS:
+                          run(browser, goods, shades)
+                  finally:
+                      browser.close()
+              print('\n验证结束：结果只是本次观测，不代表后台监控已经启动。')
+          PY
