@@ -76,6 +76,7 @@ jobs:
                           response = page.goto(link,wait_until='domcontentloaded',timeout=25000)
                           code = response.status if response else 0
                           item['page_http'] = code
+                          item['page_cf'] = response.headers.get('cf-mitigated', 'none') if response else 'none'
                           if code != 200 or response.headers.get('cf-mitigated') == 'challenge':
                               item['error'] = 'page_not_allowed'
                           else:
@@ -115,7 +116,7 @@ jobs:
                       finally:
                           ctx.close()
                       if not item['ok']:
-                          print('UNKNOWN',good,item.get('error','request_failed'),flush=True)
+                          print('UNKNOWN', good, 'PAGE_HTTP', item.get('page_http', 'NONE'), 'PAGE_CF', item.get('page_cf', 'none'), 'API_HTTP', item.get('api_http', 'NONE'), 'ERROR', item.get('error'), flush=True)
                       report['results'].append(item)
               finally:
                   browser.close()
