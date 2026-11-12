@@ -30,10 +30,10 @@ jobs:
           from urllib.parse import urlparse, parse_qs
           from playwright.sync_api import sync_playwright
 
-          PRODUCTS = [
-              ("A000001004502", ["J02", "J05"]),
-              ("A000000255435", ["101", "102", "107", "109"]),
-          ]
+PRODUCTS = [
+    ("A000000255435", ["101", "102", "107", "109"]),
+    ("A000001004502", ["J02", "J05"]),
+]
 
           BASE = "https://www.oliveyoung.co.kr"
 
