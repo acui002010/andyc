@@ -3,8 +3,6 @@ name: Olive Monitor - Scheduled Source Pilot V6
 
 'on':
   workflow_dispatch:
-  schedule:
-    - cron: '11,26,41,56 * * * *'
 
 permissions:
   contents: read
